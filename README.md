@@ -10,13 +10,13 @@ When using tools like [gh-clone-org](https://github.com/matt-bartel/gh-clone-org
 
 ```bash
 # See what would be deleted (recommended first step)
-./gh-delete-repos --dry-run
+gh delete-repos --dry-run
 
 # Interactive cleanup
-./gh-delete-repos
+gh delete-repos
 
 # Auto-delete without prompts
-./gh-delete-repos --yes
+gh delete-repos --yes
 ```
 
 ## Requirements
