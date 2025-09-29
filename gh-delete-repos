@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+
+# gh-delete-repos
+# Script to clean up local Git repositories that no longer exist on GitHub
+# Requires: gh (GitHub CLI) and git
+
+set -e
+
+usage() {
+    echo "gh-delete-repos [OPTIONS]"
+    echo ""
+    echo "Clean up local Git repositories that no longer exist on GitHub"
+    echo "Scans subdirectories of the current directory for Git repositories."
+    echo ""
+    echo "OPTIONS:"
+    echo "  -y, --yes            Delete repositories without prompting for confirmation"
+    echo "  -n, --dry-run        Show what would be deleted without actually deleting"
+    echo "  -h, --help           Display this help message"
+    echo ""
+    echo "INTERACTIVE MODE:"
+    echo "  When a deleted repository is found, you'll be prompted with:"
+    echo "  Y/y/yes - Delete the repository"
+    echo "  N/n/no  - Keep the repository (default)"
+    echo "  Q/q/quit - Exit the script"
+    echo ""
+    echo "EXAMPLES:"
+    echo "  gh-delete-repos"
+    echo "  gh-delete-repos --dry-run"
+    echo "  gh-delete-repos --yes"
+    echo ""
+    echo "REQUIREMENTS:"
+    echo "  - gh (GitHub CLI): brew install gh"
+    echo "  - Authenticated with GitHub: gh auth login"
+}
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Default options
+AUTO_YES=false
+DRY_RUN=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -y|--yes)
+            AUTO_YES=true
+            shift
+            ;;
+        -n|--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+# Always work in current directory
+BASE_DIR="$(pwd)"
+
+echo -e "${BLUE}🔍 Scanning for Git repositories in: ${BASE_DIR}${NC}"
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo -e "${YELLOW}🔍 DRY RUN MODE - No repositories will be deleted${NC}"
+fi
+echo
+
+# Counter for statistics
+total_repos=0
+deleted_repos=0
+
+# Loop through each subdirectory
+for repo_dir in */; do
+    # Skip if not a directory or if the glob didn't match anything
+    [[ -d "$repo_dir" ]] || continue
+    
+    repo_name=$(basename "$repo_dir")
+    
+    # Skip if it doesn't contain a .git directory
+    if [[ ! -d "$repo_name/.git" ]]; then
+        echo -e "${YELLOW}⚠️  Skipping ${repo_name}: Not a git repository${NC}"
+        continue
+    fi
+    
+    # Change to repository directory
+    if ! cd "$repo_name"; then
+        echo -e "${YELLOW}⚠️  Skipping ${repo_name}: Cannot access directory${NC}"
+        continue
+    fi
+    
+    # Get the remote URL (skip if no origin remote)
+    if ! remote_url=$(git remote get-url origin 2>/dev/null); then
+        echo -e "${YELLOW}⚠️  Skipping ${repo_name}: No origin remote found${NC}"
+        cd "$BASE_DIR"
+        continue
+    fi
+    
+    # Extract owner and repo name from GitHub URL (handles both SSH and HTTPS, with or without .git)
+    if [[ $remote_url =~ github\.com[:/]([^/]+)/([^/]+)(\.git)?/?$ ]]; then
+        owner="${BASH_REMATCH[1]}"
+        repo="${BASH_REMATCH[2]}"
+        # Remove .git suffix if present
+        repo="${repo%.git}"
+    else
+        echo -e "${YELLOW}⚠️  Skipping ${repo_name}: Not a GitHub repository${NC}"
+        echo -e "${YELLOW}    Remote URL: ${remote_url}${NC}"
+        cd "$BASE_DIR"
+        continue
+    fi
+    
+    ((total_repos++))
+    
+    echo -e "${BLUE}📁 Checking: ${owner}/${repo} (${repo_name})${NC}"
+    
+    # Check if repository exists on GitHub using gh cli
+    if gh repo view "$owner/$repo" >/dev/null 2>&1; then
+        echo -e "${GREEN}✅ Repository exists on GitHub${NC}"
+    else
+        echo -e "${RED}❌ Repository NOT found on GitHub!${NC}"
+        echo -e "${YELLOW}📂 Local path: ${repo_dir}${NC}"
+        
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo -e "${YELLOW}🔍 Would delete: ${repo_name}${NC}"
+            ((deleted_repos++))
+        elif [[ "$AUTO_YES" == "true" ]]; then
+            echo -e "${RED}🗑️  Auto-deleting ${repo_dir}...${NC}"
+            cd "$BASE_DIR"
+            rm -rf "$repo_dir"
+            echo -e "${GREEN}✅ Deleted successfully${NC}"
+            ((deleted_repos++))
+        else
+            echo
+            printf "${YELLOW}Delete '${repo_name}'? [y/N/q]: ${NC}"
+            
+            read -r choice || choice="n"
+            [[ -z "$choice" ]] && choice="n"
+            
+            # Convert to lowercase for case-insensitive comparison
+            choice=$(echo "$choice" | tr '[:upper:]' '[:lower:]')
+            
+            case "$choice" in
+                y|yes)
+                    echo -e "${RED}🗑️  Deleting ${repo_dir}...${NC}"
+                    cd "$BASE_DIR"
+                    rm -rf "$repo_dir"
+                    echo -e "${GREEN}✅ Deleted successfully${NC}"
+                    ((deleted_repos++))
+                    ;;
+                q|quit)
+                    echo -e "${YELLOW}🛑 Quitting...${NC}"
+                    cd "$BASE_DIR"
+                    exit 0
+                    ;;
+                n|no|*)
+                    echo -e "${BLUE}ℹ️  Kept ${repo_name}${NC}"
+                    ;;
+            esac
+        fi
+    fi
+    
+    echo
+    cd "$BASE_DIR"
+    
+done
+
+# Print summary
+echo -e "${BLUE}📊 Summary:${NC}"
+echo -e "  • Total repositories scanned: ${total_repos}"
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo -e "  • Repositories that would be deleted: ${RED}${deleted_repos}${NC}"
+    echo -e "  • Repositories that would be kept: ${GREEN}$((total_repos - deleted_repos))${NC}"
+else
+    echo -e "  • Repositories deleted: ${RED}${deleted_repos}${NC}"
+    echo -e "  • Repositories kept: ${GREEN}$((total_repos - deleted_repos))${NC}"
+fi
+echo
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo -e "${GREEN}✅ Dry run complete!${NC}"
+else
+    echo -e "${GREEN}✅ Cleanup complete!${NC}"
+fi
